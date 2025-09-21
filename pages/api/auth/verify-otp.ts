@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import dbConnect from '../../../lib/mongodb';
 import User from '../../../models/User';
 import OTPVerification from '../../../models/OTPVerification';
+import jwt from 'jsonwebtoken';
 
 interface VerifyOTPRequest {
   email: string;
@@ -70,9 +71,36 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       type: 'email_verification',
     });
 
+    // Generate JWT token for auto-login
+    const jwtSecret = process.env.NEXTAUTH_SECRET;
+    if (!jwtSecret) {
+      return res.status(500).json({ 
+        message: 'Server configuration error. Please contact support.' 
+      });
+    }
+
+    const autoLoginToken = jwt.sign(
+      {
+        userId: user._id.toString(),
+        email: user.email,
+        emailVerified: true,
+        type: 'auto-login',
+      },
+      jwtSecret,
+      { expiresIn: '10m' } // Short-lived token for auto-login
+    );
+
     res.status(200).json({
-      message: 'Email verified successfully! You can now sign in.',
+      message: 'Email verified successfully! Signing you in...',
       verified: true,
+      autoLogin: true,
+      token: autoLoginToken,
+      user: {
+        id: user._id.toString(),
+        email: user.email,
+        name: user.name,
+        emailVerified: user.emailVerified,
+      },
     });
 
   } catch (error) {

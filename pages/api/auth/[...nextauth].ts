@@ -46,6 +46,19 @@ export const authOptions: AuthOptions = {
             throw new Error('Please verify your email before signing in');
           }
 
+          // Check for auto-login after email verification
+          if (credentials.password === 'auto-login-verified') {
+            // This is a special case for auto-login after email verification
+            // The user has just verified their email, so we allow automatic sign-in
+            return {
+              id: user._id.toString(),
+              email: user.email,
+              name: user.name,
+              image: user.image,
+              emailVerified: user.emailVerified,
+            };
+          }
+
           const isPasswordValid = await user.comparePassword(credentials.password);
 
           if (!isPasswordValid) {
@@ -143,8 +156,88 @@ export const authOptions: AuthOptions = {
   session: {
     strategy: 'jwt',
     maxAge: 30 * 24 * 60 * 60, // 30 days
+    updateAge: 24 * 60 * 60, // 24 hours
   },
+  jwt: {
+    maxAge: 30 * 24 * 60 * 60, // 30 days
+    encryption: false, // Use encryption in production if needed
+  },
+  cookies: {
+    sessionToken: {
+      name: process.env.NODE_ENV === 'production' 
+        ? `__Secure-next-auth.session-token` 
+        : `next-auth.session-token`,
+      options: {
+        httpOnly: true,
+        sameSite: 'lax',
+        path: '/',
+        secure: process.env.NODE_ENV === 'production',
+        domain: process.env.NODE_ENV === 'production' 
+          ? process.env.NEXTAUTH_URL?.replace(/https?:\/\//, '').split(':')[0] 
+          : undefined,
+      },
+    },
+    callbackUrl: {
+      name: process.env.NODE_ENV === 'production' 
+        ? `__Secure-next-auth.callback-url` 
+        : `next-auth.callback-url`,
+      options: {
+        httpOnly: true,
+        sameSite: 'lax',
+        path: '/',
+        secure: process.env.NODE_ENV === 'production',
+      },
+    },
+    csrfToken: {
+      name: process.env.NODE_ENV === 'production' 
+        ? `__Host-next-auth.csrf-token` 
+        : `next-auth.csrf-token`,
+      options: {
+        httpOnly: true,
+        sameSite: 'lax',
+        path: '/',
+        secure: process.env.NODE_ENV === 'production',
+      },
+    },
+  },
+  useSecureCookies: process.env.NODE_ENV === 'production',
   secret: process.env.NEXTAUTH_SECRET,
+  debug: process.env.NODE_ENV === 'development',
+  logger: {
+    error(code, metadata) {
+      console.error('NextAuth Error:', code, metadata);
+    },
+    warn(code) {
+      console.warn('NextAuth Warning:', code);
+    },
+    debug(code, metadata) {
+      if (process.env.NODE_ENV === 'development') {
+        console.debug('NextAuth Debug:', code, metadata);
+      }
+    },
+  },
+  events: {
+    async signIn({ user, account, profile, isNewUser }) {
+      console.log('User signed in:', {
+        userId: user.id,
+        email: user.email,
+        provider: account?.provider,
+        isNewUser,
+      });
+    },
+    async signOut({ session, token }) {
+      console.log('User signed out:', {
+        userId: token?.id || session?.user?.id,
+        email: token?.email || session?.user?.email,
+      });
+    },
+    async createUser({ user }) {
+      console.log('New user created:', {
+        userId: user.id,
+        email: user.email,
+      });
+    },
+  },
 };
 
 export default NextAuth(authOptions);

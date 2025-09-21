@@ -1,51 +1,147 @@
 import nodemailer from 'nodemailer';
+import { logger, createEmailError } from './error-handling';
 
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: parseInt(process.env.SMTP_PORT || '587'),
-  secure: false, // true for 465, false for other ports
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-});
+// Email service types
+export type EmailService = 'gmail' | 'sendgrid' | 'aws-ses' | 'smtp';
+
+// Create transporter based on environment configuration
+function createTransporter() {
+  const service = process.env.EMAIL_SERVICE as EmailService || 'smtp';
+
+  switch (service) {
+    case 'gmail':
+      if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+        throw new Error('Gmail service requires EMAIL_USER and EMAIL_PASS');
+      }
+      return nodemailer.createTransporter({
+        service: 'gmail',
+        auth: {
+          user: process.env.EMAIL_USER,
+          pass: process.env.EMAIL_PASS, // App password, not regular password
+        },
+      });
+
+    case 'sendgrid':
+      if (!process.env.SENDGRID_API_KEY) {
+        throw new Error('SendGrid service requires SENDGRID_API_KEY');
+      }
+      return nodemailer.createTransporter({
+        host: 'smtp.sendgrid.net',
+        port: 587,
+        secure: false,
+        auth: {
+          user: 'apikey',
+          pass: process.env.SENDGRID_API_KEY,
+        },
+      });
+
+    case 'aws-ses':
+      if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
+        throw new Error('AWS SES service requires AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY');
+      }
+      return nodemailer.createTransporter({
+        host: `email-smtp.${process.env.AWS_REGION || 'us-east-1'}.amazonaws.com`,
+        port: 587,
+        secure: false,
+        auth: {
+          user: process.env.AWS_ACCESS_KEY_ID,
+          pass: process.env.AWS_SECRET_ACCESS_KEY,
+        },
+      });
+
+    case 'smtp':
+    default:
+      if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
+        throw new Error('SMTP service requires SMTP_HOST, SMTP_USER, and SMTP_PASS');
+      }
+      return nodemailer.createTransporter({
+        host: process.env.SMTP_HOST,
+        port: parseInt(process.env.SMTP_PORT || '587'),
+        secure: process.env.SMTP_SECURE === 'true',
+        auth: {
+          user: process.env.SMTP_USER,
+          pass: process.env.SMTP_PASS,
+        },
+      });
+  }
+}
+
+let transporter: nodemailer.Transporter | null = null;
+
+function getTransporter() {
+  if (!transporter) {
+    try {
+      transporter = createTransporter();
+    } catch (error) {
+      logger.error('Failed to create email transporter', error);
+      throw createEmailError('transporter_creation', error);
+    }
+  }
+  return transporter;
+}
 
 export interface EmailTemplate {
   to: string;
   subject: string;
   html: string;
+  text?: string; // Plain text version
 }
 
-export const sendEmail = async ({ to, subject, html }: EmailTemplate): Promise<boolean> => {
-  // Check if SMTP is configured
-  if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
-    console.warn('⚠️ SMTP not configured - email sending skipped');
-    console.warn('   For email verification, configure SMTP settings in .env.local');
-    console.warn('   See QUICK_SETUP.md for instructions');
-    return false;
-  }
-
+export const sendEmail = async ({ to, subject, html, text }: EmailTemplate): Promise<boolean> => {
   try {
-    const info = await transporter.sendMail({
-      from: process.env.FROM_EMAIL || process.env.SMTP_USER,
+    const emailTransporter = getTransporter();
+    
+    // Determine from address based on service
+    const fromEmail = process.env.EMAIL_FROM || 
+                     process.env.EMAIL_USER || 
+                     process.env.SMTP_USER || 
+                     'noreply@kagazi.com';
+
+    const info = await emailTransporter.sendMail({
+      from: `Kagazi <${fromEmail}>`,
       to,
       subject,
       html,
+      text: text || extractTextFromHtml(html), // Fallback plain text
     });
 
-    console.log('✅ Email sent successfully:', info.messageId);
+    logger.info('Email sent successfully', {
+      messageId: info.messageId,
+      to,
+      subject,
+      service: process.env.EMAIL_SERVICE || 'smtp',
+    });
+    
     return true;
   } catch (error: any) {
-    console.error('❌ Email sending failed:', error.message);
+    logger.error('Email sending failed', error, {
+      to,
+      subject,
+      service: process.env.EMAIL_SERVICE || 'smtp',
+    });
     
-    if (error.message.includes('authentication') || error.message.includes('auth')) {
-      console.error('   Check your SMTP_USER and SMTP_PASS in .env.local');
-      console.error('   For Gmail: Use App Passwords, not regular password');
+    // Provide specific error guidance
+    if (error.message.includes('authentication') || error.code === 'EAUTH') {
+      logger.warn('Email authentication failed - check credentials');
+    } else if (error.code === 'ECONNECTION' || error.code === 'ETIMEDOUT') {
+      logger.warn('Email connection failed - check network/firewall');
     }
     
-    return false;
+    throw createEmailError('send_email', error);
   }
 };
+
+// Extract plain text from HTML for email clients that don't support HTML
+function extractTextFromHtml(html: string): string {
+  return html
+    .replace(/<[^>]*>/g, '') // Remove HTML tags
+    .replace(/&nbsp;/g, ' ') // Replace &nbsp; with space
+    .replace(/&amp;/g, '&') // Replace &amp; with &
+    .replace(/&lt;/g, '<') // Replace &lt; with <
+    .replace(/&gt;/g, '>') // Replace &gt; with >
+    .replace(/\s+/g, ' ') // Replace multiple spaces with single space
+    .trim();
+}
 
 export const generateOTPEmailTemplate = (otp: string, name: string): string => {
   return `

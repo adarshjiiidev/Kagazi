@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import { signIn } from 'next-auth/react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -53,6 +54,41 @@ export function OTPVerification({ email, onSuccess }: OTPVerificationProps) {
 
       if (response.ok) {
         setSuccess(data.message);
+        
+        // Handle auto-login if token is provided
+        if (data.autoLogin && data.user) {
+          setSuccess('✓ Email verified successfully! Signing you in...');
+          
+          try {
+            // Use NextAuth signIn with credentials
+            const signInResult = await signIn('credentials', {
+              email: data.user.email,
+              password: 'auto-login-verified', // Special identifier for auto-login
+              redirect: false,
+            });
+            
+            if (signInResult?.ok) {
+              setSuccess('✓ Welcome! Redirecting to your dashboard...');
+              setTimeout(() => {
+                if (onSuccess) {
+                  onSuccess();
+                } else {
+                  router.push('/dashboard');
+                }
+              }, 1500);
+              return;
+            } else if (signInResult?.error) {
+              console.error('Auto sign-in failed:', signInResult.error);
+              setSuccess('✓ Email verified! Please sign in with your credentials.');
+            }
+            
+          } catch (autoLoginError) {
+            console.error('Auto-login error:', autoLoginError);
+            setSuccess('✓ Email verified! Please sign in with your credentials.');
+          }
+        }
+        
+        // Default behavior: redirect to sign-in page
         setTimeout(() => {
           if (onSuccess) {
             onSuccess();

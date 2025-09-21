@@ -3,6 +3,7 @@ import dbConnect from '../../../lib/mongodb';
 import User from '../../../models/User';
 import OTPVerification from '../../../models/OTPVerification';
 import { sendEmail, generateOTPEmailTemplate, generateOTP } from '../../../lib/email';
+import { validatePassword, authRateLimiter, getClientIP } from '../../../lib/password-security';
 
 interface RegisterRequest {
   email: string;
@@ -27,6 +28,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       });
     }
 
+    // Rate limiting check
+    const clientIP = getClientIP(req);
+    const rateLimitKey = `register:${clientIP}`;
+    
+    if (authRateLimiter.isRateLimited(rateLimitKey)) {
+      const resetTime = authRateLimiter.getResetTime(rateLimitKey);
+      const remainingTime = resetTime ? Math.ceil((resetTime - Date.now()) / 60000) : 15;
+      return res.status(429).json({ 
+        message: `Too many registration attempts. Please try again in ${remainingTime} minutes.`,
+        error: 'RATE_LIMITED'
+      });
+    }
+
     const { email, password, name }: RegisterRequest = req.body;
 
     // Validate input
@@ -34,8 +48,29 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(400).json({ message: 'All fields are required' });
     }
 
-    if (password.length < 6) {
-      return res.status(400).json({ message: 'Password must be at least 6 characters' });
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ message: 'Please enter a valid email address' });
+    }
+
+    // Validate name (no special characters, reasonable length)
+    if (name.length < 2 || name.length > 50) {
+      return res.status(400).json({ message: 'Name must be between 2 and 50 characters' });
+    }
+    
+    if (!/^[a-zA-Z\s'-]+$/.test(name)) {
+      return res.status(400).json({ message: 'Name can only contain letters, spaces, hyphens, and apostrophes' });
+    }
+
+    // Enhanced password validation
+    const passwordValidation = validatePassword(password);
+    if (!passwordValidation.isValid) {
+      return res.status(400).json({ 
+        message: 'Password does not meet security requirements',
+        passwordFeedback: passwordValidation.feedback,
+        error: 'WEAK_PASSWORD'
+      });
     }
 
     // Check if user already exists
